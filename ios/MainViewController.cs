@@ -191,19 +191,33 @@ public sealed class MainViewController : UIViewController
     static string SizeStr(long n) => n >= 1L << 30 ? $"{n / 1073741824.0:0.0} GB" : $"{n / 1048576.0:0.0} MB";
 
     // ---------- file picking (UIDocumentPicker, copy into tmp) ----------
+    // Delegate-based (not C# events): covers both ObjC selectors
+    // documentPicker:didPickDocumentAtURL: (single) and
+    // documentPicker:didPickDocumentsAtURLs: (multi), regardless of which
+    // one the .NET projection exposes as an event.
+    sealed class PickDelegate : UIDocumentPickerDelegate
+    {
+        readonly MainViewController _v;
+        public PickDelegate(MainViewController v) => _v = v;
+        [Foundation.Export("documentPicker:didPickDocumentsAtURLs:")]
+        public void DidPickDocuments(UIDocumentPickerViewController c, NSUrl[] urls)
+            => _ = _v.AddUrlsAsync(urls ?? Array.Empty<NSUrl>());
+        [Foundation.Export("documentPicker:didPickDocumentAtURL:")]
+        public override void DidPickDocument(UIDocumentPickerViewController c, NSUrl url)
+            => _ = _v.AddUrlsAsync(url == null ? Array.Empty<NSUrl>() : new[] { url });
+        [Foundation.Export("documentPickerWasCancelled:")]
+        public override void WasCancelled(UIDocumentPickerViewController c) => _v.Say("pick cancelled");
+    }
+
+    PickDelegate? _pickDelegate;
+
     void PickFlow()
     {
         var types = new[] { UTTypes.Data };
         var picker = new UIDocumentPickerViewController(types, true);
         picker.AllowsMultipleSelection = true;
-        picker.DidPickDocument += async (_, e) =>
-        {
-            NSUrl[] urls = Array.Empty<NSUrl>();
-            try { urls = (e.GetType().GetProperty("Urls")?.GetValue(e) as NSUrl[]) ?? urls; }
-            catch { }
-            if (urls.Length == 0 && e.Url != null) urls = new[] { e.Url };
-            await AddUrlsAsync(urls);
-        };
+        _pickDelegate = new PickDelegate(this);
+        picker.Delegate = _pickDelegate;
         PresentViewController(picker, true, null);
     }
 
@@ -230,6 +244,8 @@ public sealed class MainViewController : UIViewController
         catch { return 0; }
     }
 
+    // Files app "Open in PKG Sender" lands here via AppDelegate.OpenUrl.
+    public Task<bool> ImportExternalAsync(NSUrl url) => AddUrlAsync(url);
     async Task<bool> AddUrlAsync(NSUrl url)
     {
         try
@@ -241,18 +257,34 @@ public sealed class MainViewController : UIViewController
                 string tmp = Path.Combine(Path.GetTempPath(), name);
                 if (!File.Exists(tmp))
                 {
-                    // stream length first for a free-space guard (multi-GB PKGs)
-                    long srcLen = -1;
-                    try { using var probe = File.OpenRead(url.Path!); srcLen = probe.Length; } catch { }
+                    // Coordinated read: url.Path may be nil/stale for iCloud or
+                    // third-party providers — NSFileCoordinator materializes it.
+                    string? srcPath = null;
+                    NSError? coordErr = null;
+                    using var coord = new NSFileCoordinator();
+                    coord.CoordinateRead(url, NSFileCoordinatorReadingOptions.WithoutChanges,
+                        out coordErr, readUrl => { srcPath = readUrl?.Path; });
+                    if (srcPath == null)
+                        throw new IOException("file not available locally (iCloud? download it in Files first)"
+                            + (coordErr != null ? ": " + coordErr.LocalizedDescription : ""));
+                    long srcLen = new FileInfo(srcPath).Length;
                     long free = TmpFreeBytes();
                     if (srcLen > 0 && free > 0 && srcLen + (64L << 20) > free)
                     {
                         Say($"not enough tmp space for {name} (need {SizeStr(srcLen)}, free {SizeStr(free)})");
                         return false;
                     }
-                    using var src = File.OpenRead(url.Path!);
-                    using var dst = File.Create(tmp);
-                    await src.CopyToAsync(dst);
+                    try
+                    {
+                        using var src = File.OpenRead(srcPath);
+                        using var dst = File.Create(tmp);
+                        await src.CopyToAsync(dst);
+                    }
+                    catch
+                    {
+                        try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                        throw;
+                    }
                 }
                 string low = name.ToLowerInvariant();
                 string fmt = low.EndsWith(".exfat") ? "exfat" : low.EndsWith(".ffpfsc") ? "ffpfsc"

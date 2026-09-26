@@ -7,6 +7,7 @@ namespace PkgSender.iOS;
 public sealed class AppDelegate : UIApplicationDelegate
 {
     public override UIWindow? Window { get; set; }
+    MainViewController? _main;
 
     public override bool FinishedLaunching(UIApplication application, NSDictionary launchOptions)
     {
@@ -14,9 +15,21 @@ public sealed class AppDelegate : UIApplicationDelegate
         // system locales (e.g. Persian) don't mirror/shift the scroll content.
         Window = new UIWindow(UIScreen.MainScreen.Bounds);
         Window.SemanticContentAttribute = UISemanticContentAttribute.ForceLeftToRight;
-        Window.RootViewController = new UINavigationController(new MainViewController());
+        _main = new MainViewController();
+        Window.RootViewController = new UINavigationController(_main);
         Window.MakeKeyAndVisible();
         return true;
+    }
+
+    // Files app → Share/Open in "PKG Sender": import the file.
+    public override bool OpenUrl(UIApplication app, NSUrl url, NSDictionary options)
+    {
+        if (_main != null && url != null)
+        {
+            _ = _main.ImportExternalAsync(url);
+            return true;
+        }
+        return false;
     }
 }
 
