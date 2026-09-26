@@ -33,7 +33,7 @@ public sealed class MainViewController : UIViewController
 
     UITextField? _ipField;
     UILabel? _connLabel;
-    UILabel? _statusLabel;
+    UISwitch? _ps4Switch;    UILabel? _statusLabel;
     UIProgressView? _prog;
     UIButton? _sendBtn;
     UITableView? _table;
@@ -105,6 +105,11 @@ public sealed class MainViewController : UIViewController
         hero.AddArrangedSubview(row);
         _connLabel = MkLabel("not tested", 13, true, UIColor.SecondaryLabel);
         hero.AddArrangedSubview(_connLabel);
+        var ps4Row = new UIStackView { Axis = UILayoutConstraintAxis.Horizontal, Spacing = 8 };
+        _ps4Switch = new UISwitch();
+        ps4Row.AddArrangedSubview(MkLabel("PS4 console", 14, false));
+        ps4Row.AddArrangedSubview(_ps4Switch);
+        hero.AddArrangedSubview(ps4Row);
         stack.AddArrangedSubview(hero);
 
         // ELF card (same bundled pkg-receiver.elf as Android)
@@ -121,6 +126,7 @@ public sealed class MainViewController : UIViewController
         _libHead = MkLabel("Library (0)", 20, true);
         libRow.AddArrangedSubview(_libHead);
         libRow.AddArrangedSubview(MkBtn("+ Add", PickFlow));
+        libRow.AddArrangedSubview(MkBtn("Clear tmp", ClearTmp));
         stack.AddArrangedSubview(libRow);
 
         _table = new UITableView { RowHeight = 64, ScrollEnabled = false, TranslatesAutoresizingMaskIntoConstraints = false };
@@ -192,17 +198,36 @@ public sealed class MainViewController : UIViewController
         picker.AllowsMultipleSelection = true;
         picker.DidPickDocument += async (_, e) =>
         {
-            var urls = new[] { e.Url };
-            Say($"reading {urls.Length} file(s)…");
-            int n = 0;
-            foreach (var url in urls)
-            {
-                if (await AddUrlAsync(url)) n++;
-            }
-            RefreshLib();
-            Say(n > 0 ? $"{n} added — tick to queue" : "nothing added");
+            NSUrl[] urls = Array.Empty<NSUrl>();
+            try { urls = (e.GetType().GetProperty("Urls")?.GetValue(e) as NSUrl[]) ?? urls; }
+            catch { }
+            if (urls.Length == 0 && e.Url != null) urls = new[] { e.Url };
+            await AddUrlsAsync(urls);
         };
         PresentViewController(picker, true, null);
+    }
+
+    async Task AddUrlsAsync(NSUrl[] urls)
+    {
+        if (urls.Length == 0) { Say("nothing picked"); return; }
+        Say($"reading {urls.Length} file(s)…");
+        int n = 0;
+        foreach (var url in urls)
+        {
+            if (await AddUrlAsync(url)) n++;
+        }
+        RefreshLib();
+        Say(n > 0 ? $"{n} added — tick to queue" : "nothing added");
+    }
+
+    static long TmpFreeBytes()
+    {
+        try
+        {
+            var attrs = NSFileManager.DefaultManager.GetFileSystemAttributes(Path.GetTempPath());
+            return (long)(attrs?.FreeSize ?? 0);
+        }
+        catch { return 0; }
     }
 
     async Task<bool> AddUrlAsync(NSUrl url)
@@ -216,6 +241,15 @@ public sealed class MainViewController : UIViewController
                 string tmp = Path.Combine(Path.GetTempPath(), name);
                 if (!File.Exists(tmp))
                 {
+                    // stream length first for a free-space guard (multi-GB PKGs)
+                    long srcLen = -1;
+                    try { using var probe = File.OpenRead(url.Path!); srcLen = probe.Length; } catch { }
+                    long free = TmpFreeBytes();
+                    if (srcLen > 0 && free > 0 && srcLen + (64L << 20) > free)
+                    {
+                        Say($"not enough tmp space for {name} (need {SizeStr(srcLen)}, free {SizeStr(free)})");
+                        return false;
+                    }
                     using var src = File.OpenRead(url.Path!);
                     using var dst = File.Create(tmp);
                     await src.CopyToAsync(dst);
@@ -243,6 +277,23 @@ public sealed class MainViewController : UIViewController
             finally { if (access) url.StopAccessingSecurityScopedResource(); }
         }
         catch (Exception ex) { Say("add failed: " + Short(ex.Message)); return false; }
+    }
+
+    void ClearTmp()
+    {
+        try
+        {
+            int n = 0;
+            HashSet<string> live;
+            lock (_lib) live = new HashSet<string>(_lib.Select(x => x.Path));
+            foreach (var f in Directory.GetFiles(Path.GetTempPath()))
+            {
+                if (live.Contains(f)) continue;
+                try { File.Delete(f); n++; } catch { }
+            }
+            Say(n > 0 ? $"cleared {n} tmp file(s) ({SizeStr(TmpFreeBytes())} free)" : $"tmp already clean ({SizeStr(TmpFreeBytes())} free)");
+        }
+        catch (Exception ex) { Say("clear failed: " + Short(ex.Message)); }
     }
 
     // ---------- bundled ELF ----------
@@ -286,6 +337,16 @@ public sealed class MainViewController : UIViewController
             }
             Say($"console={mode} phone={pcIp}");
             SetConn(true, $"connected ({mode}) • {psIp}");
+            // self-test: local file server must be reachable (console pulls from us)
+            try
+            {
+                using var t = new RangeFileServer(new Dictionary<string, string>(), ServerPort);
+                t.Start();
+                using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+                var r = await http.GetAsync($"http://127.0.0.1:{ServerPort}/");
+                Say($"console={mode} phone={pcIp}\nserver self-test: HTTP {(int)r.StatusCode} — ready to serve");
+            }
+            catch (Exception ex) { Say($"console={mode} phone={pcIp}\nserver self-test FAILED: {Short(ex.Message)}"); }
         }
         catch (Exception ex) { SetConn(false, "test failed"); Say("test error: " + Short(ex.Message)); }
     }
@@ -383,8 +444,7 @@ public sealed class MainViewController : UIViewController
             _busy = false;
             lock (_lib) foreach (var q in queue) if (q.State.StartsWith("done")) q.Queued = false;
             RefreshLib();
-        }
-    }
+        }    }
 
     async Task<bool> SendOneAsync(string psIp, string pcIp, LibItem it)
     {
@@ -395,7 +455,7 @@ public sealed class MainViewController : UIViewController
             _server.Start();
             string url = _server.UrlFor(pcIp, "pkg");
             var pkg = it.Pkg;
-            bool isPs4 = (pkg?.Platform ?? "").StartsWith("PS4");
+            bool isPs4 = (_ps4Switch?.On == true) || (pkg?.Platform ?? "").StartsWith("PS4");
             string? iconUrl = null;
             if (pkg?.IconData is { Length: > 0 })
             {
@@ -508,6 +568,15 @@ public sealed class MainViewController : UIViewController
             lock (_v._lib) _v._lib[p.Row].Queued = !_v._lib[p.Row].Queued;
             _v.RefreshLib();
             t.DeselectRow(p, true);
+        }
+        public override bool CanEditRow(UITableView t, NSIndexPath p) => !_v._busy;
+        public override void CommitEditingStyle(UITableView t, UITableViewCellEditingStyle s, NSIndexPath p)
+        {
+            if (s != UITableViewCellEditingStyle.Delete || _v._busy) return;
+            string path = "";
+            lock (_v._lib) { path = _v._lib[p.Row].Path; _v._lib.RemoveAt(p.Row); }
+            try { if (path.StartsWith(Path.GetTempPath()) && File.Exists(path)) File.Delete(path); } catch { }
+            _v.RefreshLib();
         }
     }
 }
