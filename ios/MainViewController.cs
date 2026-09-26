@@ -37,6 +37,7 @@ public sealed class MainViewController : UIViewController
     UIProgressView? _prog;
     UIButton? _sendBtn;
     UITableView? _table;
+    NSLayoutConstraint? _tableHeight;
     UILabel? _libHead;
 
     string SavedIp
@@ -84,7 +85,8 @@ public sealed class MainViewController : UIViewController
 
         // hero: title + IP + Test + Detect
         var hero = Card();
-        hero.AddArrangedSubview(MkLabel("PKG Sender  •  v1.0.3", 22, true));
+        string dispVer = NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?";
+        hero.AddArrangedSubview(MkLabel($"PKG Sender  •  v{dispVer}", 22, true));
         hero.AddArrangedSubview(MkLabel("PS4 / PS5 packages over LAN", 14, false, UIColor.SecondaryLabel));
         _ipField = new UITextField
         {
@@ -97,12 +99,10 @@ public sealed class MainViewController : UIViewController
         };
         _ipField.SemanticContentAttribute = UISemanticContentAttribute.ForceLeftToRight;
         hero.AddArrangedSubview(_ipField);
-        var row = new UIStackView { Axis = UILayoutConstraintAxis.Horizontal, Spacing = 8 };
-        row.AddArrangedSubview(MkBtn("Test", async () => await TestAsync()));
-        row.AddArrangedSubview(MkBtn("Detect", async () => await DetectAsync()));
-        var guide = MkBtn("Guide", ShowGuide);
-        row.AddArrangedSubview(guide);
-        hero.AddArrangedSubview(row);
+        hero.AddArrangedSubview(BtnRow(
+            ("Test", async () => await TestAsync()),
+            ("Detect", async () => await DetectAsync()),
+            ("Guide", ShowGuide)));
         _connLabel = MkLabel("not tested", 13, true, UIColor.SecondaryLabel);
         hero.AddArrangedSubview(_connLabel);
         var ps4Row = new UIStackView { Axis = UILayoutConstraintAxis.Horizontal, Spacing = 8 };
@@ -115,23 +115,25 @@ public sealed class MainViewController : UIViewController
         // ELF card (same bundled pkg-receiver.elf as Android)
         var elf = Card();
         elf.AddArrangedSubview(MkLabel("pkg-receiver.elf (bundled, PS5 only)", 15, true));
-        var elfRow = new UIStackView { Axis = UILayoutConstraintAxis.Horizontal, Spacing = 8 };
-        elfRow.AddArrangedSubview(MkBtn("Save", async () => await ExportElfAsync(false)));
-        elfRow.AddArrangedSubview(MkBtn("Share", async () => await ExportElfAsync(true)));
-        elf.AddArrangedSubview(elfRow);
+        elf.AddArrangedSubview(BtnRow(
+            ("Save", async () => await ExportElfAsync(false)),
+            ("Share", async () => await ExportElfAsync(true))));
         stack.AddArrangedSubview(elf);
 
-        // library header + add
-        var libRow = new UIStackView { Axis = UILayoutConstraintAxis.Horizontal, Spacing = 8 };
+        // library header + add (vertical: header label, then equal buttons —
+        // a 3-item horizontal row overflows narrow phones like the SE)
         _libHead = MkLabel("Library (0)", 20, true);
-        libRow.AddArrangedSubview(_libHead);
-        libRow.AddArrangedSubview(MkBtn("+ Add", PickFlow));
-        libRow.AddArrangedSubview(MkBtn("Clear tmp", ClearTmp));
-        stack.AddArrangedSubview(libRow);
+        stack.AddArrangedSubview(_libHead);
+        stack.AddArrangedSubview(BtnRow(
+            ("+ Add", PickFlow),
+            ("Clear tmp", ClearTmp)));
 
         _table = new UITableView { RowHeight = 64, ScrollEnabled = false, TranslatesAutoresizingMaskIntoConstraints = false };
-        _table.HeightAnchor.ConstraintEqualTo(320).Active = true;
+        _tableHeight = _table.HeightAnchor.ConstraintEqualTo(64);
+        _tableHeight.Active = true;
         _table.Source = new LibSource(this);
+        _table.Layer.CornerRadius = 12;
+        _table.ClipsToBounds = true;
         stack.AddArrangedSubview(_table);
 
         _sendBtn = MkBtn("Send queue", async () => await SendQueueAsync(), filled: true);
@@ -160,10 +162,23 @@ public sealed class MainViewController : UIViewController
         s.BackgroundColor = UIColor.SecondarySystemBackground;
         return s;
     }
+    // Horizontal button row that can never overflow the screen width:
+    // equal-width buttons shrink together instead of pushing content off-screen.
+    static UIStackView BtnRow(params (string Title, Action Tap)[] btns)
+    {
+        var r = new UIStackView
+        {
+            Axis = UILayoutConstraintAxis.Horizontal, Spacing = 8,
+            Distribution = UIStackViewDistribution.FillEqually,
+        };
+        foreach (var (t, a) in btns) r.AddArrangedSubview(MkBtn(t, a));
+        return r;
+    }
     static UILabel MkLabel(string t, nfloat size, bool bold, UIColor? c = null)
     {
         var l = new UILabel { Text = t, Font = bold ? UIFont.BoldSystemFontOfSize(size) : UIFont.SystemFontOfSize(size) };
         if (c != null) l.TextColor = c;
+        l.Lines = 0; // wrap instead of forcing the row wider than the phone
         return l;
     }
     static UIButton MkBtn(string t, Action a, bool filled = false)
@@ -171,6 +186,8 @@ public sealed class MainViewController : UIViewController
         var b = new UIButton(UIButtonType.System);
         b.SetTitle(t, UIControlState.Normal);
         if (filled) { b.BackgroundColor = UIColor.SystemBlue; b.SetTitleColor(UIColor.White, UIControlState.Normal); b.Layer.CornerRadius = 12; }
+        b.TitleLabel!.AdjustsFontSizeToFitWidth = true;
+        b.TitleLabel.MinimumScaleFactor = 0.7f;
         b.TouchUpInside += (_, _) => a();
         return b;
     }
@@ -185,6 +202,9 @@ public sealed class MainViewController : UIViewController
     {
         if (_libHead != null) _libHead.Text = $"Library ({_lib.Count})";
         if (_sendBtn != null) { int q = _lib.Count(x => x.Queued); _sendBtn.SetTitle(q > 0 ? $"Send queue ({q})" : "Send queue", UIControlState.Normal); }
+        // table grows with content (max 5 rows visible) instead of a fixed
+        // 320pt block, so short libraries don't push Send off-screen
+        if (_tableHeight != null) _tableHeight.Constant = Math.Max(1, Math.Min(_lib.Count, 5)) * 64;
         _table?.ReloadData();
     });
     static string Short(string s) => s.Length > 140 ? s[..140] : s;
