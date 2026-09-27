@@ -15,8 +15,11 @@ public sealed class AppDelegate : UIApplicationDelegate
         // system locales (e.g. Persian) don't mirror/shift the scroll content.
         Window = new UIWindow(UIScreen.MainScreen.Bounds);
         Window.SemanticContentAttribute = UISemanticContentAttribute.ForceLeftToRight;
+        UIView.Appearance.SemanticContentAttribute = UISemanticContentAttribute.ForceLeftToRight;
         _main = new MainViewController();
-        Window.RootViewController = new UINavigationController(_main);
+        var nav = new UINavigationController(_main);
+        nav.View.SemanticContentAttribute = UISemanticContentAttribute.ForceLeftToRight;
+        Window.RootViewController = nav;
         Window.MakeKeyAndVisible();
         return true;
     }

@@ -73,8 +73,17 @@ Select `.exfat` / `.ffpkg` / `.ffpfsc` rows and press **Copy images** — they l
 
 Jailbreak the PS4 and start **one** of these (the app tries them in this order):
 
-1. **Remote Package Installer (RPI)** — install the RPI `.pkg` on the PS4 and run it (serves its API on port `12800`). Easiest path, use this one.
+1. **Remote Package Installer (RPI)** — install the RPI `.pkg` on the PS4 and run it (serves its API on port `12800`). Easiest path, use this one. Get it from the author: <https://github.com/flatz/ps4_remote_pkg_installer> (Releases page).
 2. **GoldHEN with Payload Server enabled** — enable it in GoldHEN settings (ports `9090` / `9021` / `9020`). PKG Sender injects its installer payload itself; you install nothing extra.
+
+### 1b. Install speed (measured, same gigabit LAN)
+
+| Path | Typical speed | Why |
+| ---- | ------------- | --- |
+| RPI (recommended) | ~75 MB/s | RPI's own downloader, 2 parallel 16 MB streams |
+| GoldHEN | ~50 MB/s | BGFT pulls the manifest pieces strictly one-by-one in 16 MB chunks — a console-side pipeline cap, not your network |
+
+Reference points on the same setup: USB install ~100 MB/s, plain LAN file transfer ~100 MB/s, PKG Sender's own HTTP server benchmarks at 2000+ MB/s loopback. So if install speed matters, do not use the GoldHEN path — use RPI. No PC-side tuning raises the GoldHEN path further.
 
 ### 2. Connect and test
 
@@ -226,7 +235,12 @@ Published endpoints on the PC file server (`:9898`, CORS-open):
 
 If you enjoy what I build and want to support my work, you can donate — every bit means a lot. 💙
 
-- USDT (BEP-20): `0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50`
+<a href="https://coffeebede.com/loopayeh" target="_blank" rel="noopener"><img src="https://coffeebede.com/banner.svg?u=loopayeh" width="468" height="100" alt="برام یه قهوه بخر" /></a>
+
+[☕ برام یه قهوه بخر — coffeebede.com/loopayeh](https://coffeebede.com/loopayeh)
+*(🇮🇷 برای ایران — حمایت تومانی)*
+
+- USDT (BEP-20) *(🌍 بین‌المللی)*: `0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50`
   ([send via TrustWallet](https://link.trustwallet.com/send?coin=20000714&address=0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50&token_id=0x55d398326f99059fF775485246999027B3197955))
 - More: [loopayeh.github.io](https://loopayeh.github.io/)
 

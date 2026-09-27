@@ -276,7 +276,7 @@ public partial class LibraryView : UserControl
         {
             if (gamesList.ItemsPanelRoot is UniformGrid grid)
             {
-                int cols = Math.Max(1, (int)(gamesList.Bounds.Width / 180));
+                int cols = Math.Max(1, (int)(gamesList.Bounds.Width / 150));
                 if (grid.Columns != cols)
                     grid.Columns = cols;
             }
@@ -1778,6 +1778,7 @@ public partial class LibraryView : UserControl
         if (_server != null)
             return;
         _server = new RangeFileServer(_registry);
+        _server.CopyBufferSize = 1024 * 1024; // desktop: 1MB pump buffer (phones stay 256KB)
         _server.FileRequested += id =>
         {
             _lastServe = DateTime.UtcNow;
@@ -2120,7 +2121,36 @@ public partial class LibraryView : UserControl
             if (!ok4)
             {
                 Post(() => { item.Message = "RPI silent — trying GoldHEN…"; });
-                _server!.RegisterManifest(id, Ps4Installer.BuildManifest(url, pkg.PackageSize, pkg.Digest));
+                // Multi-piece manifest: BGFT pulls pieces in parallel
+                // (4 connections for 1GB+), each served from /pkg/{id}.p{i}.
+                // Split by REAL file size: header/scan metadata can be wrong
+                // (a 4GB file once read as <256MB and stayed single-piece).
+                // If piece registration fails, fall back to the whole-file
+                // url (a .p0 url with no registration is a guaranteed 404).
+                long realSize;
+                try { realSize = new FileInfo(item.Game.Path).Length; }
+                catch { realSize = pkg.PackageSize; }
+                int n = Ps4Installer.SplitCount(realSize);
+                string pieceErr = "";
+                _server!.UnregisterPieces(id);
+                try { _server!.RegisterPieces(id, item.Game.Path, n); }
+                catch (Exception ex) { n = 0; pieceErr = ex.GetType().Name + ": " + ex.Message; }
+                _server!.RegisterManifest(id, n > 1
+                    ? Ps4Installer.BuildManifest(
+                        i => _server!.UrlFor(_m.PcIp, RangeFileServer.PieceId(id, i)),
+                        pkg.PackageSize, n, pkg.Digest)
+                    : Ps4Installer.BuildManifest(url, pkg.PackageSize, pkg.Digest));
+                if (pieceErr.Length > 0)
+                {
+                    try
+                    {
+                        File.AppendAllText(
+                            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                                "PkgSender", "push-debug.log"),
+                            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [pieces] id={id} n={n} ERR={pieceErr}\n");
+                    }
+                    catch { }
+                }
                 string manifestUrl = _server!.ManifestUrlFor(_m.PcIp, id);
                 var g = await Ps4Installer.PushGoldHenAsync(_m.PsIp, _m.PcIp, manifestUrl, pkg, _server!.Port);
                 ok4 = g.Ok;

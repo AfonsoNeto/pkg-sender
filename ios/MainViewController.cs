@@ -51,6 +51,7 @@ public sealed class MainViewController : UIViewController
         base.ViewDidLoad();
         Title = "PKG Sender";
         View!.BackgroundColor = UIColor.SystemBackground;
+        View.SemanticContentAttribute = UISemanticContentAttribute.ForceLeftToRight;
 
         var scroll = new UIScrollView
         {
@@ -583,8 +584,12 @@ public sealed class MainViewController : UIViewController
     void ShowAbout()
     {
         var a = UIAlertController.Create("PKG Sender (iOS) • by Loopayeh",
-            "Installs PS4/PS5 games over LAN.\nRun pkg-receiver.elf on PS5, or Remote Package Installer / GoldHEN on PS4.\n\ngithub.com/Loopayeh/pkg-sender",
+            "Installs PS4/PS5 games over LAN.\nRun pkg-receiver.elf on PS5, or Remote Package Installer / GoldHEN on PS4.\n\ngithub.com/Loopayeh/pkg-sender\n\n☕ coffeebede.com/loopayeh",
             UIAlertControllerStyle.Alert);
+        a.AddAction(UIAlertAction.Create("☕ حمایت تومانی", UIAlertActionStyle.Default, _ =>
+        {
+            try { UIApplication.SharedApplication.OpenUrl(new NSUrl("https://coffeebede.com/loopayeh")); } catch { }
+        }));
         a.AddAction(UIAlertAction.Create("Close", UIAlertActionStyle.Default, null));
         PresentViewController(a, true, null);
     }

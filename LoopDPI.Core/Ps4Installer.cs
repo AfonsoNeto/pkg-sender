@@ -136,23 +136,40 @@ public static class Ps4Installer
     }
 
     /// <summary>
-    /// GoldHEN manifest JSON (DPI RegisterJSON shape, single piece).
+    /// GoldHEN manifest JSON (DPI RegisterJSON shape). pieces[] are parallel
+    /// BGFT connections: 4 for 1GB+, 2 for 256MB+, else single piece.
     /// The PS4-side payload fetches this manifest and feeds pieces[] to
     /// BGFT — the struct URL must be this manifest, never the raw PKG
     /// (raw gives BGFT 0x80990033). packageDigest is the real PKG header
     /// digest (CNT+0xFE0), like DPI's PKGInfo.Digest.
     /// </summary>
+    public static int SplitCount(long fileSize) =>
+        fileSize >= 1L << 30 ? 4 : fileSize >= 256L << 20 ? 2 : 1;
+
     public static string BuildManifest(string fileUrl, long fileSize, string digest = "")
+        => BuildManifest(_ => fileUrl, fileSize, 1, digest);
+
+    public static string BuildManifest(Func<int, string> urlFor, long fileSize, int pieces, string digest = "")
     {
-        string eu = fileUrl.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        pieces = Math.Clamp(pieces, 1, 16);
         string dg = (digest ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
-        return "{\"originalFileSize\":" + fileSize
-            + ",\"packageDigest\":\"" + dg + "\""
-            + ",\"numberOfSplitFiles\":1"
-            + ",\"pieces\":[{\"url\":\"" + eu + "\""
-            + ",\"fileOffset\":0"
-            + ",\"fileSize\":" + fileSize
-            + ",\"hashValue\":\"0000000000000000000000000000000000000000\"}]}";
+        var sb = new StringBuilder("{\"originalFileSize\":" + fileSize);
+        sb.Append(",\"packageDigest\":\"").Append(dg).Append('"');
+        sb.Append(",\"numberOfSplitFiles\":").Append(pieces);
+        sb.Append(",\"pieces\":[");
+        for (int i = 0; i < pieces; i++)
+        {
+            long off = fileSize * i / pieces;
+            long len = fileSize * (i + 1) / pieces - off;
+            string eu = urlFor(i).Replace("\\", "\\\\").Replace("\"", "\\\"");
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"url\":\"").Append(eu).Append('"');
+            sb.Append(",\"fileOffset\":").Append(off);
+            sb.Append(",\"fileSize\":").Append(len);
+            sb.Append(",\"hashValue\":\"0000000000000000000000000000000000000000\"}");
+        }
+        sb.Append("]}");
+        return sb.ToString();
     }
 
     public static async Task<(bool Ok, string Reply)> PushRpiAsync(string psIp, string fileUrl, string? name = null, string? iconUrl = null)

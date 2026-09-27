@@ -9,6 +9,7 @@ public partial class AboutWindow : Window
     private const string SupportAddr = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50";
     private const string SupportUrl = "https://link.trustwallet.com/send?coin=20000714&address=0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50";
     private const string LinksUrl = "https://loopayeh.github.io/";
+    private const string CoffeeUrl = "https://coffeebede.com/loopayeh";
 
     public AboutWindow()
     {
@@ -28,6 +29,7 @@ public partial class AboutWindow : Window
         };
         this.FindControl<Button>("LinksButton").Click += (_, _) => OpenUrl(LinksUrl);
         this.FindControl<Button>("SupportButton").Click += (_, _) => OpenUrl(SupportUrl);
+        this.FindControl<Button>("CoffeeButton").Click += (_, _) => OpenUrl(CoffeeUrl);
         var settings = LoopDPI.Core.AppSettings.Load();
         var chk = this.FindControl<CheckBox>("UpdateCheckBox");
         chk.IsChecked = settings.UpdateCheck;

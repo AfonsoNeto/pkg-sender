@@ -59,16 +59,44 @@ public sealed class RangeFileServer : IDisposable
     public int Port { get; }
     public long Served => Interlocked.Read(ref _served);
     /// <summary>Bytes served for one registered id (per-file progress).</summary>
-    public long ServedFor(string id) => _servedById.TryGetValue(id, out var v) ? v : 0;
+    public long ServedFor(string id)
+    {
+        long v = _servedById.TryGetValue(id, out var x) ? x : 0;
+        if (_pieces.TryGetValue(id, out var list))
+            foreach (var p in list)
+                if (_servedById.TryGetValue(p, out var y))
+                    v += y;
+        return v;
+    }
     /// <summary>
     /// Stop serving one id (404 from now on). The console's in-flight
     /// download of it errors out instead of continuing silently.
     /// </summary>
-    public void Revoke(string id) => _revoked[id] = 0;
+    public void Revoke(string id)
+    {
+        _revoked[id] = 0;
+        if (_pieces.TryGetValue(id, out var list))
+            foreach (var p in list) _revoked[p] = 0;
+    }
     /// <summary>Serve the id again (undo Revoke, e.g. for resume).</summary>
-    public void Unrevoke(string id) => _revoked.TryRemove(id, out _);
+    public void Unrevoke(string id)
+    {
+        _revoked.TryRemove(id, out _);
+        if (_pieces.TryGetValue(id, out var list))
+            foreach (var p in list) _revoked.TryRemove(p, out _);
+    }
     /// <summary>Zero the per-file served counter (fresh push of the same id).</summary>
-    public void ResetServed(string id) => _servedById[id] = 0;
+    public void ResetServed(string id)
+    {
+        _servedById[id] = 0;
+        if (_pieces.TryGetValue(id, out var list))
+            foreach (var p in list) _servedById[p] = 0;
+    }
+    /// <summary>
+    /// Per-write copy buffer. 256KB default: 16 parallel receiver segments
+    /// share a small heap (4MB buffers OOM phones). Desktop overrides to 1MB.
+    /// </summary>
+    public int CopyBufferSize { get; set; } = 256 * 1024;
     public event Action<long, long>? Progress;
     public event Action<string>? FileRequested;
 
@@ -101,10 +129,57 @@ public sealed class RangeFileServer : IDisposable
     /// <summary>Serve id from a seekable source instead of a file (direct mode).</summary>
     public void RegisterSource(string id, IRangeSource source) => _sources[id] = source;
     public void UnregisterSource(string id) => _sources.TryRemove(id, out _);
+    /// <summary>Piece id for the i-th split of a multi-piece manifest.</summary>
+    public static string PieceId(string id, int i) => $"{id}.p{i}";
     public string ManifestUrlFor(string host, string id) =>
         $"http://{host}:{Port}/json/{Uri.EscapeDataString(id)}.json";
     /// <summary>Optional sink for every HTTP request line (diagnostics).</summary>
     public Action<string>? RequestLog { get; set; }
+
+    private readonly ConcurrentDictionary<string, List<string>> _pieces = new();
+
+    /// <summary>
+    /// Split one file into count parallel pieces for BGFT (multi-connection
+    /// download). Piece i is served at /pkg/{id}.p{i} covering its byte
+    /// range; progress/revoke counters follow the parent id automatically.
+    /// </summary>
+    public void RegisterPieces(string id, string path, int count)
+    {
+        UnregisterPieces(id);
+        count = Math.Clamp(count, 1, 16);
+        long size = new FileInfo(path).Length;
+        var list = new List<string>(count);
+        for (int i = 0; i < count; i++)
+        {
+            long start = size * i / count;
+            long end = size * (i + 1) / count;
+            string pid = PieceId(id, i);
+            _sources[pid] = new SliceSource(path, start, end - start);
+            list.Add(pid);
+        }
+        _pieces[id] = list;
+    }
+
+    /// <summary>Drop all piece slices of an id (re-push registers fresh).</summary>
+    public void UnregisterPieces(string id)
+    {
+        if (_pieces.TryRemove(id, out var list))
+            foreach (var p in list) _sources.TryRemove(p, out _);
+    }
+
+    private sealed class SliceSource : IRangeSource
+    {
+        private readonly string _path;
+        private readonly long _base;
+        public SliceSource(string path, long offset, long length)
+        {
+            _path = path;
+            _base = offset;
+            Length = length;
+        }
+        public long Length { get; }
+        public Stream OpenAt(long offset) => OpenFileAt(_path, _base + offset);
+    }
 
     public void Start()
     {
@@ -192,6 +267,9 @@ public sealed class RangeFileServer : IDisposable
         {
             var req = new byte[16384];
             var sb = new StringBuilder();
+            int handled = 0;
+        ReadNext:
+            sb.Clear();
             try
             {
                 int n;
@@ -225,8 +303,26 @@ public sealed class RangeFileServer : IDisposable
             string noQuery = rawTarget.Split('?')[0];
             string clientIp = "unknown";
             try { clientIp = (cl.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "unknown"; } catch { }
+            string connHdr = "", httpVer = "";
+            try
+            {
+                var fp = first.Split(' ');
+                if (fp.Length > 2) httpVer = fp[2];
+                foreach (var line in header.Split("\r\n"))
+                    if (line.StartsWith("Connection:", StringComparison.OrdinalIgnoreCase))
+                    { connHdr = line[11..].Trim(); break; }
+            }
+            catch { }
             void Log(string status) { try { RequestLog?.Invoke($"{clientIp} {method} {noQuery} -> {status} [a={ActiveRequests}]"); } catch { } }
-            Log("in");
+            Log($"in {httpVer} conn={connHdr}");
+            // Honor client keep-alive (the console asks for it on every
+            // request): the hot /pkg path loops back for the next request
+            // instead of forcing a reconnect per 16MB chunk.
+            bool wantKeep = connHdr.Equals("keep-alive", StringComparison.OrdinalIgnoreCase)
+                || (httpVer.Equals("HTTP/1.1", StringComparison.OrdinalIgnoreCase)
+                    && !connHdr.Equals("close", StringComparison.OrdinalIgnoreCase));
+            string connTail = "\r\n\r\n";
+            string connOut = (wantKeep ? "Connection: keep-alive" : "Connection: close") + connTail;
             // /catalog: JSON library for the console browser (PKG only).
             if (noQuery.Equals("/catalog", StringComparison.OrdinalIgnoreCase))
             {
@@ -265,7 +361,7 @@ public sealed class RangeFileServer : IDisposable
                 {
                 }
                 var jb = Encoding.UTF8.GetBytes(json);
-                await WriteRaw(ns, $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {jb.Length}\r\nConnection: close\r\n\r\n", ct);
+                await WriteRaw(ns, $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {jb.Length}\r\n" + connOut + "", ct);
                 if (!isHead)
                 {
                     try
@@ -286,12 +382,12 @@ public sealed class RangeFileServer : IDisposable
                     _revoked.ContainsKey(iconId))
                 {
                     Log($"icon 404 ({iconId})");
-                    await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found", ct);
+                    await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n" + connOut + "not found", ct);
                     return;
                 }
                 FileRequested?.Invoke(iconId);
                 Log($"icon 200 ({iconId}, {png.Length} bytes)");
-                await WriteRaw(ns, $"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {png.Length}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n", ct);
+                await WriteRaw(ns, $"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {png.Length}\r\nAccept-Ranges: bytes\r\n" + connOut + "", ct);
                 if (!isHead)
                 {
                     try
@@ -312,7 +408,7 @@ public sealed class RangeFileServer : IDisposable
                 if (_manifests.TryGetValue(mid, out var mjson) && mjson.Length > 0)
                 {
                     Log("manifest 200");
-                    await WriteRaw(ns, $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {mjson.Length}\r\nConnection: close\r\n\r\n", ct);
+                    await WriteRaw(ns, $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {mjson.Length}\r\n" + connOut + "", ct);
                     if (!isHead)
                     {
                         try { await ns.WriteAsync(mjson, ct); } catch { }
@@ -320,7 +416,7 @@ public sealed class RangeFileServer : IDisposable
                     return;
                 }
                 Log("manifest 404");
-                await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found", ct);
+                await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n" + connOut + "not found", ct);
                 return;
             }
             string id = "pkg";
@@ -329,7 +425,7 @@ public sealed class RangeFileServer : IDisposable
             else if (!noQuery.Equals("/pkg", StringComparison.OrdinalIgnoreCase))
             {
                 Log("404");
-                await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found", ct);
+                await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n" + connOut + "not found", ct);
                 return;
             }
 
@@ -345,7 +441,7 @@ public sealed class RangeFileServer : IDisposable
             if (src == null && path == null)
             {
                 Log("pkg 404");
-                await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found", ct);
+                await WriteRaw(ns, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n" + connOut + "not found", ct);
                 return;
             }
             FileRequested?.Invoke(id);
@@ -408,19 +504,19 @@ public sealed class RangeFileServer : IDisposable
 
             if (unsatisfiable)
             {
-                await WriteRaw(ns, $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{size}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n", ct);
+                await WriteRaw(ns, $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{size}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\n" + connOut + "", ct);
                 return;
             }
 
             long length = end - start + 1;
-            Log(partial ? "pkg 206" : "pkg 200");
+            Log(partial ? $"pkg 206 {start}-{end}/{size}" : $"pkg 200 {size}");
             var h = new StringBuilder();
             h.Append(partial ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n");
             if (partial)
                 h.Append($"Content-Range: bytes {start}-{end}/{size}\r\n");
             h.Append("Content-Type: application/octet-stream\r\n");
             h.Append($"Content-Length: {length}\r\n");
-            h.Append("Accept-Ranges: bytes\r\nConnection: close\r\n\r\n");
+            h.Append("Accept-Ranges: bytes\r\n" + connOut + "");
             await WriteRaw(ns, h.ToString(), ct);
 
             if (isHead)
@@ -429,9 +525,8 @@ public sealed class RangeFileServer : IDisposable
             try
             {
                 using Stream fs = src != null ? src.OpenAt(start) : OpenFileAt(path!, start);
-                // 256KB: 16 parallel receiver segments share the 256MB app
-                // heap — 4MB buffers OOM the phone (~270MB into a copy).
-                var buf = new byte[256 * 1024];
+                int bs = Math.Clamp(CopyBufferSize, 64 * 1024, 4 * 1024 * 1024);
+                var buf = new byte[bs];
                 while (length > 0 && !ct.IsCancellationRequested)
                 {
                     int want = (int)Math.Min(buf.Length, length);
@@ -446,6 +541,7 @@ public sealed class RangeFileServer : IDisposable
                     Progress?.Invoke(Interlocked.Add(ref _served, got), size);
                     _servedById.AddOrUpdate(id, got, (_, v) => v + got);
                 }
+                Log($"pkg sent@{start} bytes={end - start + 1 - length}");
                 if (length > 0)
                     Log($"pkg short@{start} left={length}");
             }
@@ -453,6 +549,10 @@ public sealed class RangeFileServer : IDisposable
             {
                 Log($"pkg ERR@{start} {ex.GetType().Name}: {ex.Message}");
             }
+            // Same socket, next request: the console pipelines 16MB
+            // chunks over keep-alive connections instead of reconnecting.
+            if (wantKeep && handled++ < 200)
+                goto ReadNext;
         }
     }
 

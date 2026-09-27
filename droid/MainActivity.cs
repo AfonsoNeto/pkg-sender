@@ -97,6 +97,7 @@ public sealed class MainActivity : Activity
     LinearProgressIndicator? _prog;
     MaterialButton? _sendBtn;
     MaterialButton? _testBtn;
+    MaterialButton? _detectBtn;
     TextView? _elfStatus;
     RangeFileServer? _server;
     bool _busy;
@@ -280,6 +281,13 @@ public sealed class MainActivity : Activity
         _testBtn.LayoutParameters = tbp;
         ipRow.AddView(_testBtn);
         heroIn.AddView(ipRow);
+        // slim full-width Detect under the IP row: IP keeps full width, no blank gap
+        _detectBtn = TonalBtn("⌕ Detect console automatically", () => _ = DetectAsync());
+        _detectBtn.TextSize = 13;
+        var dbp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
+        dbp.TopMargin = Dp(8);
+        _detectBtn.LayoutParameters = dbp;
+        heroIn.AddView(_detectBtn);
         _connView = new TextView(this) { Text = "● not tested" };
         _connView.TextSize = 13; _connView.SetTypeface(null, TypefaceStyle.Bold);
         _connView.SetTextColor(Dyn("colorOnSurfaceVariant", Color.Gray));
@@ -436,6 +444,7 @@ public sealed class MainActivity : Activity
         const string site = "https://loopayeh.github.io/";
         const string usdt = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50";
         const string trust = "https://link.trustwallet.com/send?coin=20000714&address=0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50&token_id=0x55d398326f99059fF775485246999027B3197955";
+        const string coffee = "https://coffeebede.com/loopayeh";
 
         var dlg = new BottomSheetDialog(this);
         var sv = new AndroidX.Core.Widget.NestedScrollView(this);
@@ -466,7 +475,7 @@ public sealed class MainActivity : Activity
         ht.LayoutParameters = htp;
         var t = new TextView(this) { Text = "PKG Sender" };
         t.TextSize = 20; t.SetTypeface(null, TypefaceStyle.Bold);
-        var ver = new TextView(this) { Text = "1.0.0 (Android) • by Loopayeh" };
+        var ver = new TextView(this) { Text = "1.0.1 (Android) • by Loopayeh" };
         ver.SetTextColor(_subColor); ver.TextSize = 13;
         ht.AddView(t); ht.AddView(ver);
         head.AddView(ht);
@@ -522,6 +531,7 @@ public sealed class MainActivity : Activity
         twBtn.LayoutParameters = twp;
         drow.AddView(copyBtn); drow.AddView(twBtn);
         v.AddView(drow);
+        v.AddView(LinkRow("☕ حمایت تومانی — coffeebede.com/loopayeh", coffee));
 
         var close = FilledBtn("Close", () => dlg.Dismiss());
         v.AddView(close);
@@ -1336,6 +1346,7 @@ public sealed class MainActivity : Activity
         _busy = true;
         _sendBtn!.Enabled = false;
         _testBtn!.Enabled = false;
+        if (_detectBtn != null) _detectBtn.Enabled = false;
         RunOnUiThread(() => RefreshLib()); // rebuild rows with locked checkboxes
         // keep Wi-Fi/CPU awake: doze or Wi-Fi power-save dropping the
         // server mid-transfer looks like a random "copy failed" on console
@@ -1389,7 +1400,7 @@ public sealed class MainActivity : Activity
             _busy = false;
             // done items leave the queue (unticked); failed stay ticked for retry
             lock (_lib) foreach (var q in queue) if (q.State.StartsWith("done")) q.Queued = false;
-            RunOnUiThread(() => { _sendBtn.Enabled = true; _testBtn!.Enabled = true; RefreshLib(); });
+            RunOnUiThread(() => { _sendBtn.Enabled = true; _testBtn!.Enabled = true; if (_detectBtn != null) _detectBtn.Enabled = true; RefreshLib(); });
         }
     }
 
@@ -1637,6 +1648,65 @@ public sealed class MainActivity : Activity
     }
 
     // ---------- test ----------
+
+    /// <summary>
+    /// Auto-discover the console: listen for receiver UDP beacons
+    /// ("PKGSENDER...") on 12801, fill the IP field and Test it.
+    /// No need to read the IP off the console screen anymore.
+    /// </summary>
+    async Task DetectAsync()
+    {
+        var det = _detectBtn;
+        if (det != null) RunOnUiThread(() => det.Enabled = false);
+        try
+        {
+            Say("listening for console beacons…");
+            SetConn(null, "detecting…");
+            string? ip = await Task.Run(() => ListenForBeacon(TimeSpan.FromSeconds(6)));
+            if (string.IsNullOrEmpty(ip))
+            {
+                SetConn(false, "no beacon — type IP manually");
+                Say("no beacon heard: console off / other network / AP isolation. Type the IP and Test.");
+                return;
+            }
+            RunOnUiThread(() => { if (_psIp != null) _psIp.Text = ip; });
+            GetPreferences(FileCreationMode.Private).Edit().PutString("psip", ip).Apply();
+            Say($"found console at {ip} — testing…");
+            await TestAsync();
+        }
+        finally { if (det != null) RunOnUiThread(() => det.Enabled = true); }
+    }
+
+    static string? ListenForBeacon(TimeSpan wait)
+    {
+        try
+        {
+            using var udp = new System.Net.Sockets.UdpClient(12801);
+            udp.Client.ReceiveTimeout = 500;
+            var deadline = DateTime.UtcNow + wait;
+            var seen = new System.Collections.Generic.HashSet<string>();
+            while (DateTime.UtcNow < deadline)
+            {
+                try
+                {
+                    var ep = new System.Net.IPEndPoint(System.Net.IPAddress.Any, 0);
+                    byte[] buf = udp.Receive(ref ep);
+                    string msg = System.Text.Encoding.ASCII.GetString(buf);
+                    if (!msg.StartsWith("PKGSENDER", StringComparison.Ordinal)) continue;
+                    if (System.Net.IPAddress.IsLoopback(ep.Address)) continue;
+                    // prefer the IP embedded in the beacon tail ("PKGSENDER v1 192.168.x.x")
+                    string ip = ep.Address.ToString();
+                    foreach (var part in msg.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                        if (System.Net.IPAddress.TryParse(part, out var a) && !System.Net.IPAddress.IsLoopback(a))
+                        { ip = a.ToString(); break; }
+                    if (seen.Add(ip)) return ip;
+                }
+                catch (System.Net.Sockets.SocketException) { }
+            }
+        }
+        catch { }
+        return null;
+    }
 
     async Task TestAsync()
     {

@@ -5,8 +5,8 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <ApplicationId>com.loopayeh.pkgsender</ApplicationId>
-    <ApplicationVersion>1</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
+    <ApplicationVersion>2</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0.1</ApplicationDisplayVersion>
     <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
   </PropertyGroup>
   <ItemGroup>

@@ -44,6 +44,9 @@
           Text="3) Start the PKG Receiver on the console, then PKG Sender on the PC — in the app pick the PC address, type the console IP, press Test."/>
         <TextBlock TextWrapping="Wrap" FontSize="12" FontWeight="Bold" Foreground="#E8A34C"
           Text="⚠ Do NOT leave a direct cable on automatic IP: Windows or the console may fall back to 169.254.x.x, which PKG Sender ignores on purpose. If the cable is in but nothing is found, this is almost always the cause — set the static addresses above."/>
+        <TextBlock Text="PS4 speed tip" FontSize="16" FontWeight="Bold" Margin="0,8,0,0"/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8B93A5"
+          Text="On PS4 use Remote Package Installer (flatz, port 12800) — about 75 MB/s. The GoldHEN path tops out near 50 MB/s because the console fetches pieces one-by-one; that cap is on the console side, not your network. PKG Sender tries RPI first automatically."/>
         <TextBlock Text="Troubleshooting" FontSize="16" FontWeight="Bold" Margin="0,8,0,0"/>
         <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#8B93A5"
           Text="• “No receiver” — the elf is not running on the console. Send it again."/>
