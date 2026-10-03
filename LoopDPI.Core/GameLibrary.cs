@@ -818,7 +818,7 @@ public static class PythonHeader
         // a bare python without it silently yields bare-ID stubs.
         foreach (var c in new[] { "python", "python3", "py" })
         {
-            if (ProbePython(c, "-c \"import mkpfs; print('bridgeready')\"", "bridgeready", 15000))
+            if (ProbePython(c, new[] { "-c", "import mkpfs; print('bridgeready')" }, "bridgeready", 15000))
             {
                 _python = c;
                 return c;
@@ -826,7 +826,7 @@ public static class PythonHeader
         }
         foreach (var c in new[] { "python", "python3", "py" })
         {
-            if (ProbePython(c, "--version", null, 8000))
+            if (ProbePython(c, new[] { "--version" }, null, 8000))
             {
                 _python = c;
                 return c;
@@ -835,19 +835,19 @@ public static class PythonHeader
         return null;
     }
 
-    private static bool ProbePython(string exe, string args, string? expect, int ms)
+    private static bool ProbePython(string exe, string[] args, string? expect, int ms)
     {
         try
         {
-            var psi = new ProcessStartInfo
+            var psi = new ProcessStartInfo(exe)
             {
-                FileName = exe,
-                Arguments = args,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            foreach (var a in args)
+                psi.ArgumentList.Add(a);
             using var p = Process.Start(psi);
             if (p == null)
                 return false;
