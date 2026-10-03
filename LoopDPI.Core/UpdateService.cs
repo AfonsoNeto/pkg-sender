@@ -178,13 +178,18 @@ public static class UpdateService
     /// PkgSender.old, removed on next start), relaunch and return true.
     /// Caller must exit immediately.
     /// </summary>
-    public static bool RunTarGzUpdateAndExit(string tarGzPath)
+    public static bool RunTarGzUpdateAndExit(string tarGzPath) =>
+        RunTarGzUpdateAndExit(tarGzPath, Environment.ProcessPath ?? "");
+
+    /// <summary>Swap logic with the install location explicit, so the E2E
+    /// test can exercise a real swap without touching the running binary.</summary>
+    public static bool RunTarGzUpdateAndExit(string tarGzPath, string exePath)
     {
         try
         {
-            string exe = Environment.ProcessPath ?? "";
+            string exe = exePath;
             string dir = Path.GetDirectoryName(exe) ?? "";
-            if (string.IsNullOrEmpty(exe) || Flavor() != LinuxFlavor.TarGz) return false;
+            if (string.IsNullOrEmpty(exe) || !File.Exists(exe) || Flavor() != LinuxFlavor.TarGz) return false;
             string tmp = Path.Combine(Path.GetTempPath(), "pkgsender_upd_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tmp);
             // tar keeps the stored exec bit, so no chmod pass needed;

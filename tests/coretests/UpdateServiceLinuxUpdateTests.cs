@@ -96,6 +96,41 @@ public class UpdateServiceLinuxUpdateTests : IDisposable
     }
 
     /// <summary>
+    /// Real end-to-end self-update: a fake "installed" binary is replaced by
+    /// the tarball's payload through the actual swap path — new binary in
+    /// place (exec bit kept), old one preserved as PkgSender.old.
+    /// </summary>
+    [Fact]
+    public void RunTarGzUpdateAndExit_EndToEnd_SwapsBinaryAndKeepsOld()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        const UnixFileMode Exec755 =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+        string installDir = Path.Combine(_dir, "install");
+        Directory.CreateDirectory(installDir);
+        string exe = Path.Combine(installDir, "PkgSender");
+        File.WriteAllText(exe, "#!/bin/sh\necho v1\n");
+        File.SetUnixFileMode(exe, Exec755);
+
+        string stage = Path.Combine(_dir, "stage");
+        Directory.CreateDirectory(stage);
+        string newBin = Path.Combine(stage, "PkgSender");
+        File.WriteAllText(newBin, "#!/bin/sh\necho v2\n");
+        File.SetUnixFileMode(newBin, Exec755);
+        string tar = Path.Combine(_dir, "update.tar.gz");
+        RunTar($"-czf \"{tar}\" -C \"{stage}\" PkgSender");
+
+        Assert.True(UpdateService.RunTarGzUpdateAndExit(tar, exe));
+        Assert.Equal("#!/bin/sh\necho v2\n", File.ReadAllText(exe));
+        Assert.Equal("#!/bin/sh\necho v1\n", File.ReadAllText(exe + ".old"));
+        Assert.True(File.GetUnixFileMode(exe).HasFlag(UnixFileMode.UserExecute),
+            "swapped-in binary must stay executable");
+    }
+
+    /// <summary>
     /// The contract between Build-Release.sh and the updater: the tarball
     /// carries "PkgSender" at its root with the exec bit stored, so the
     /// updater's single-member extract yields a runnable binary.
