@@ -17,7 +17,7 @@ namespace LoopDPI.Core;
 /// </summary>
 public static class UpdateService
 {
-    public const string AppVersion = "v1.2.8";
+    public const string AppVersion = "v1.2.9";
     public const string UpdateRepo = "Loopayeh/pkg-sender";
 
     /// <summary>How this build is packaged; only TarGz self-updates on Linux.</summary>

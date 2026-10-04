@@ -30,7 +30,7 @@ jobs:
 
       - name: Stage portable tar.gz
         run: |
-          VER=$(sed -n 's/.*<Version>\([^<]*\)<.*/\1/p' library/PkgSender.csproj | head -1); VER=${VER:-1.2.8}
+          VER=$(sed -n 's/.*<Version>\([^<]*\)<.*/\1/p' library/PkgSender.csproj | head -1); VER=${VER:-1.2.9}
           echo "VER=$VER" >> "$GITHUB_ENV"
           chmod +x publish/PkgSender
           cp payload/pkg-receiver.elf publish/
@@ -40,7 +40,7 @@ jobs:
 
       - name: Build AppImage
         run: |
-          VER=${VER:-1.2.8}
+          VER=${VER:-1.2.9}
           mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/1024x1024/apps
           cp publish/PkgSender publish/pkg-receiver.elf publish/pkg_header.py AppDir/usr/bin/
           ln -s usr/bin/PkgSender AppDir/AppRun
